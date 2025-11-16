@@ -28,6 +28,11 @@ import com.example.cartaovisitaartur.ui.theme.CartaoVisitaArturTheme
 import androidx.navigation.navArgument
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+
 
 
 
@@ -47,6 +52,25 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
+    val context = LocalContext.current
+
+    // criar DB e DAO
+    val db = remember {
+        androidx.room.Room.databaseBuilder(
+            context,
+            com.example.cartaovisitaartur.data.local.AppDatabase::class.java,
+            "app_database"
+        ).fallbackToDestructiveMigration().build()
+    }
+    val dao = db.projectDao()
+
+    // criar repo usando o usuário que você informou
+    val repo = remember { com.example.cartaovisitaartur.repository.ProjectRepository(dao, com.example.cartaovisitaartur.data.remote.RetrofitInstance.api, "artur-leao-neto") }
+
+    // criar ViewModel com factory
+    val viewModel: com.example.cartaovisitaartur.ui.viewmodel.ProjectListViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+        factory = com.example.cartaovisitaartur.ui.viewmodel.ProjectListViewModelFactory(repo)
+    )
 
     NavHost(navController = navController, startDestination = "perfil") {
         composable("perfil") {
@@ -59,6 +83,7 @@ fun AppNavigation() {
 
         composable("projetos") {
             TelaListaProjetos(
+                viewModel = viewModel,
                 onProjetoClick = { projetoId ->
                     navController.navigate("detalhes/$projetoId")
                 },
@@ -71,10 +96,15 @@ fun AppNavigation() {
             arguments = listOf(navArgument("id") { type = NavType.IntType })
         ) { backStackEntry ->
             val id = backStackEntry.arguments?.getInt("id") ?: 0
-            TelaDetalhesProjeto(id, onVoltar = { navController.popBackStack() })
+            TelaDetalhesProjeto(
+                id = id,
+                repository = repo,
+                onVoltar = { navController.popBackStack() }
+            )
         }
     }
 }
+
 
 
 @Composable
@@ -160,25 +190,106 @@ fun ContatoRow(icone: Int, texto: String) {
     }
 }
 
-data class Projeto(val id: Int, val nome: String, val descricao: String)
-
-val mockProjetos = listOf(
-    Projeto(1, "App de Receitas", "Aplicativo que exibe receitas e ingredientes."),
-    Projeto(2, "Catálogo de Filmes", "Lista de filmes com avaliação e sinopse."),
-    Projeto(3, "To-Do List", "Aplicativo simples de tarefas diárias."),
-    Projeto(4, "Site Pessoal", "Página web com portfólio e contatos."),
-)
-
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TelaDetalhesProjeto(id: Int, onVoltar: () -> Unit) {
-    val projeto = mockProjetos.find { it.id == id }
+fun TelaListaProjetos(
+    viewModel: com.example.cartaovisitaartur.ui.viewmodel.ProjectListViewModel,
+    onProjetoClick: (Int) -> Unit,
+    onVoltar: () -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsState()
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(projeto?.nome ?: "Detalhes") },
+                title = { Text("Meus Projetos") },
+                navigationIcon = {
+                    IconButton(onClick = onVoltar) {
+                        Icon(
+                            imageVector = Icons.Filled.ArrowBack,
+                            contentDescription = "Voltar"
+                        )
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp)
+        ) {
+
+            when (uiState) {
+                is com.example.cartaovisitaartur.ui.viewmodel.UiState.Loading -> {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Carregando projetos...")
+                    }
+                }
+
+                is com.example.cartaovisitaartur.ui.viewmodel.UiState.Success -> {
+                    val projetos =
+                        (uiState as com.example.cartaovisitaartur.ui.viewmodel.UiState.Success).projects
+
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(projetos) { projeto ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onProjetoClick(projeto.id) },
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F0F8))
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(projeto.nome, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(projeto.descricao ?: "")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                is com.example.cartaovisitaartur.ui.viewmodel.UiState.Error -> {
+                    val msg =
+                        (uiState as com.example.cartaovisitaartur.ui.viewmodel.UiState.Error).message
+
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Erro: $msg")
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(onClick = { /* você pode implementar retry opcional */ }) {
+                            Text("Tentar novamente")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TelaDetalhesProjeto(id: Int, repository: com.example.cartaovisitaartur.repository.ProjectRepository, onVoltar: () -> Unit) {
+    // coleta diretamente do repositório (Flow -> State)
+    val projectState = repository.getProjectByIdFlow(id).collectAsState(initial = null)
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(projectState.value?.nome ?: "Detalhes") },
                 navigationIcon = {
                     IconButton(onClick = onVoltar) {
                         Icon(
@@ -198,58 +309,18 @@ fun TelaDetalhesProjeto(id: Int, onVoltar: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Text(
-                text = "ID do projeto: ${projeto?.id}",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(text = projeto?.descricao ?: "Descrição não encontrada")
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun TelaListaProjetos(onProjetoClick: (Int) -> Unit, onVoltar: () -> Unit) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Meus Projetos") },
-                navigationIcon = {
-                    IconButton(onClick = onVoltar) {
-                        Icon(
-                            imageVector = Icons.Filled.ArrowBack,
-                            contentDescription = "Voltar"
-                        )
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(mockProjetos) { projeto ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onProjetoClick(projeto.id) },
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F0F8))
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(projeto.nome, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(projeto.descricao)
-                    }
-                }
+            val projeto = projectState.value
+            if (projeto == null) {
+                Text("Projeto não encontrado", fontSize = 20.sp)
+            } else {
+                Text(
+                    text = "ID do projeto: ${projeto.id}",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(text = projeto.descricao ?: "Sem descrição")
             }
         }
     }
 }
-
-
